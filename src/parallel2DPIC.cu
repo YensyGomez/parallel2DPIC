@@ -18,7 +18,9 @@
 #include <curand_kernel.h>
 #include <cufft.h>
 
-float L,LL; int N, C,itera;
+float L,LL;
+
+int N, C,itera;
 
 using namespace std;
 
@@ -47,17 +49,17 @@ __device__ float distribution (float vb, float aleatorio, curandState *states)  
  return 0;
 }
 //Distribución aleatoria de las partículas.
-__global__ void distribucionParticulas(float *rx,float *ry,float *vx,float *vy,int N,curandState *states,float vb,float L){
+__global__ void distribucionParticulas(float *rx,float *ry,float *vx,float *vy,int N,curandState *states,float vb,float L, int seed){
 	int Idx = blockIdx.x*blockDim.x + threadIdx.x;
 
-	unsigned int seed = (unsigned int) (clock() * Idx);
+	seed = (unsigned int) (clock() * Idx);
 	curand_init(seed, 0, 0, states + Idx);
 
 	if(Idx < N){
-		 rx[Idx] = L*curand_uniform(states + Idx);    //inicializando la posicion aleatoria en x
-		 ry[Idx] = L*curand_uniform(states + Idx);
-		 vx[Idx] = distribution(vb,curand_uniform(states + Idx),states);//;L*curand_uniform_float(states + Idx);//distribution(vb,states);                          //inicializa la velocidad con una distribucion maxwelliana
-		 vy[Idx] = distribution(vb,curand_uniform(states + Idx),states);//L*curand_uniform_float(states + Idx);//distribution(vb,states);                          //inicializa la velocidad con una distribucion maxwelliana
+		rx[Idx] = L*curand_uniform(states + Idx);    //inicializando la posicion aleatoria en x
+		ry[Idx] = L*curand_uniform(states + Idx);
+		vx[Idx] = distribution(vb,curand_uniform(states + Idx),states);//;L*curand_uniform_float(states + Idx);//distribution(vb,states);                          //inicializa la velocidad con una distribucion maxwelliana
+		vy[Idx] = distribution(vb,curand_uniform(states + Idx),states);//L*curand_uniform_float(states + Idx);//distribution(vb,states);                          //inicializa la velocidad con una distribucion maxwelliana
 
 	}
 
@@ -66,107 +68,72 @@ __global__ void distribucionParticulas(float *rx,float *ry,float *vx,float *vy,i
 // inicialización de la densidad.
 __global__ void inicializacionDensidad(float *ne,int C){
 	int Id=blockIdx.x*blockDim.x + threadIdx.x;
-		if(Id<(C*C)){
-			ne[Id]=0.0;
-		}
+	if(Id<(C*C)){
+		ne[Id] = 0.0;
+	}
  }
 
 __global__ void inicializacionValoresReales(float *vr,int C){
 	int Id=blockIdx.x*blockDim.x + threadIdx.x;
-		if(Id<(C*C)){
-			vr[Id]=0.0;
-		}
+	if(Id<(C*C)){
+		vr[Id] = 0.0;
+	}
  }
 
 //Calculo de la densidad en cada celda.
 
-__global__ void calculoDensidad(float *rx, float *ry, float *ne, int N, int C,float L){
-	int Id=blockIdx.x*blockDim.x + threadIdx.x;
+__global__ void calculoDensidadInicializacionCeldas(float *rx, float *ry, int *jx,int *jy,float *yx, int N, int C,float L){
+	int Id = blockIdx.x*blockDim.x + threadIdx.x;
 	 float dx = L / float (C);
-	 float dxx=L/float(C*C);
-	if(Id<N){
-
-				int jx = int(rx[Id]/dx); //posicion en x de la particula
-			    int jy = int(ry[Id]/dx); //posicion en y de la particula
-			    float yx = (rx[Id]/dx) - (float)jx; //posicion exacta de la particula en x de la celda "j"
-			    //float yy = (ry[Id]/dx) - (float)jy; //posicion exacta de la particula en y de la celda "j"
-			    ne[(jy*C)+jx] += (1. - yx)/dxx;
-			    if(jx+1==C) ne[(jy*C)] += yx/dxx;
-			    else ne[(jy*C)+jx+1] += yx/dxx;
-
+	 //float dxx = L /float(C*C);
+	if(Id < N){
+		 jx[Id] = int(rx[Id]/dx); //posicion en x de la particula
+		 jy[Id] = int(ry[Id]/dx); //posicion en y de la particula
+		 yx[Id] = (rx[Id]/dx) - (float)jx[Id]; //posicion exacta de la particula en x de la celda "j"
     }
 
 }
-////pasar de reales a complejos.
-//__global__ void real2complex(float *ne, cufftComplex *u,int C){
-//	int i = threadIdx.x + blockIdx.x*blockDim.x;
-//	int j = threadIdx.y + blockIdx.y*blockDim.y;
-//	int index=j*N+i;
-//	if(i<(C*C) && j<(C*C)){
-//		u[index].x=ne[index];
-//		u[index].y=0.0f;
-//
-//	}
-//
-//}
-//
-////Inicialización de los vectores para el cálculo de potencial Electroestático.
-//
-//__global__ void calculoPoisson(cufftComplex *u, cufftComplex *v,float kappa, int C){
-//	int i=blockIdx.x*blockDim.x + threadIdx.x;
-//	int j=blockIdx.y*blockDim.y + threadIdx.y;
-//
-//		if(i<(C*C)&&j<(C/J)){
-//					  if(j==0){
-//						  v[i][j].x=0.;
-//						  v[i][j].y=0.;
-//
-//					  }
-//					  else{
-//						  v[i][j].x=-u[i][j]/(((j*j) + (i*i))*(kappa*kappa));
-//						  v[i][j].y=-u[i][j]/(((j*j) + (i*i))*(kappa*kappa));
-//
-//					  }
-//				  }
-//			 }
-////pasar de complejos a reales.
-//__global__ void complex2real(cufftComplex *v, float *vr,int C){
-//	int i = blockIdx.x*blockDim.x + threadIdx.x;
-//		int j = blockIdx.y*blockDim.y + threadIdx.y;
-//		int index=j*N+i;
-//		if(i<(C*C) && j<(C*C)){
-//			vr[index]= v[index].x/((float)(C*C)*(float)(C*C));
-//			//divide por el numero de elemetos para recuperar los valores.
-//
-//		}
-//}
+__global__ void calculoDensidad(float *ne, int *jx, int *jy,float *yx, int C, float L, int N){
+	 float dxx = L /float(C*C);
+	 int Id = blockIdx.x*blockDim.x + threadIdx.x;
+	 for(int i=0; i<N; i++){
+		ne[(jy[i]*C)+jx[i]] += (1. - yx[i])/dxx;
+		if(jx[i]+1 == C) ne[(jy[i]*C)] += yx[i]/dxx;
+		else ne[(jy[i]*C)+jx[i]+1] += yx[i]/dxx;
+	 }
+
+}
+
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 int main(){
 	// Parametros
-	L = 100.0;            // dominio de la solucion 0 <= x <= L (en longitudes de debye)
+	L = 64.0;            // dominio de la solucion 0 <= x <= L (en longitudes de debye)
 	//L=LL*LL;
-	N = 20000;            // Numero de particulas
-	C = 50;            // Número de celdas.
+	N = 10000;            // Numero de particulas
+	C = 64;            // Número de celdas.
 	float vb = 3.0;    // velocidad promedio de los electrones
-	double kappa = 2. * M_PI / (L);
+	//double kappa = 2. * M_PI / (L);
 	//float dt=0.1;    // delta tiempo (en frecuencias inversas del plasma)
 	//float tmax=10000;  // cantidad de iteraciones. deben ser 100 mil segun el material
 	//int skip = int (tmax / dt) / 10; //saltos del algoritmo para reportar datos
 	//int itera=0;
-	 float salida=0.;
+	 float salida=0.0;
 	 float dx = L / float (C);
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////
 //Inicializacion de la posición de las particulas en x, y y velocidad en vx,vy del host y dispositivo.
 	float *rx_h,*ry_h,*vx_h,*vy_h;
 	float *rx_d,*ry_d, *vx_d,*vy_d;
+	int *jx_d, *jy_d;
+	float *yx_d;
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 	// inicialización de las variables de densidad del host y dispositivo.
 	float *ne_h;
 	float *ne_d;
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 	int size = N*sizeof(float);
-	int size_ne=C*C*sizeof(float);
+	int size_ne = C*C*sizeof(float);
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
 	//reserva en memoria al host
@@ -183,7 +150,9 @@ int main(){
 	cudaMalloc((void **)&vx_d,size);
 	cudaMalloc((void **)&vy_d,size);
 	cudaMalloc((void **)&ne_d,size_ne);
-
+	cudaMalloc((void **)&jx_d,size);
+	cudaMalloc((void **)&jy_d,size);
+	cudaMalloc((void **)&yx_d,size);
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 	//valores aleatorios y tamaños de los vectores.
@@ -195,16 +164,21 @@ int main(){
 	dim3 dimBlock (ceil(N/blockSize), 1, 1);
 	dim3 dimBlock2 (ceil(C*C/blockSize), 1, 1);
 	dim3 dimGrid (blockSize, 1, 1);
+	int seed = time(NULL);
 
 
-	distribucionParticulas<<<blockSize,dimBlock>>>(rx_d,ry_d,vx_d,vy_d,N,devStates,vb,L);
+	distribucionParticulas<<<blockSize,dimBlock>>>(rx_d,ry_d,vx_d,vy_d,N,devStates,vb,L, seed);
 	cudaDeviceSynchronize();
 
 	inicializacionDensidad<<<blockSize,dimBlock2>>>(ne_d,C);
 	cudaDeviceSynchronize();
 
-	calculoDensidad<<<blockSize,dimBlock>>>(rx_d,ry_d,ne_d,N,C,L);
+	calculoDensidadInicializacionCeldas<<<blockSize,dimBlock>>>(rx_d,ry_d,jx_d,jy_d,yx_d,N,C,L);
 	cudaDeviceSynchronize();
+
+	calculoDensidad<<<1,1>>>(ne_d,jx_d,jy_d,yx_d,C,L,N);//proceso de mejora.
+	cudaDeviceSynchronize();
+
 
 
 	//posición en x.
@@ -220,6 +194,8 @@ int main(){
 	cudaMemcpy(vy_h, vy_d, size, cudaMemcpyDeviceToHost);
 	//inicializacion densidades
 	cudaMemcpy(ne_h, ne_d, size_ne, cudaMemcpyDeviceToHost);
+
+
 	ofstream init;
 		init.open("distribucionInicial.txt");
 		  		    for (int i = 0; i < N; i++){
@@ -232,7 +208,7 @@ int main(){
 
 		init.open("salida_densidad3.txt");
 					for (int i = 0; i < C*C; i++){
-						init<<ne_h[i]<<" "<<dx<<endl;
+						init<<ne_h[i]<<" "<<endl;
 						salida+=ne_h[i];
 					}
 
@@ -240,10 +216,7 @@ int main(){
 					cout<<salida<<" "<<dx<<endl;
 
 
-//	//Imprimir el resultado densidad de particulas
-//	/*for(int i = 0; i < C*C;i++){
-//		printf("%f\n",ne_h[i]);
-//	}*/
+
 
 	free(rx_h);
 	free(ry_h);
