@@ -95,12 +95,36 @@ __global__ void calculoDensidadInicializacionCeldas(float *rx, float *ry, int *j
 }
 __global__ void calculoDensidad(float *ne, int *jx, int *jy,float *yx, int C, float L, int N){
 	 float dxx = L /float(C*C);
-	 int Id = blockIdx.x*blockDim.x + threadIdx.x;
+	 //int Id = blockIdx.x*blockDim.x + threadIdx.x;
 	 for(int i=0; i<N; i++){
 		ne[(jy[i]*C)+jx[i]] += (1. - yx[i])/dxx;
 		if(jx[i]+1 == C) ne[(jy[i]*C)] += yx[i]/dxx;
 		else ne[(jy[i]*C)+jx[i]+1] += yx[i]/dxx;
 	 }
+
+}
+
+__global__ void normalizacionDensidad(float *ne,float *n, int N, int C, float L){
+	 int Id = blockIdx.x*blockDim.x + threadIdx.x;
+	 if(Id<C*C){
+		 n[Id]=float(C*C)*ne[Id]/float(N)-1;
+	 }
+
+}
+
+
+void Output(float *ne_d, float *n_d, int *jx_d,int *jy_d,float *yx_d,int C,float L,int N){
+
+	float blockSize = 1024;
+	dim3 dimBlock (ceil(N/blockSize), 1, 1);
+	dim3 dimBlock2 (ceil(C*C/blockSize), 1, 1);
+	dim3 dimGrid (blockSize, 1, 1);
+
+	calculoDensidad<<<1,1>>>(ne_d,jx_d,jy_d,yx_d,C,L,N);//proceso de mejora.
+	cudaDeviceSynchronize();
+	normalizacionDensidad<<<blockSize,dimBlock2>>>(ne_d,n_d,N,C,L);
+	cudaDeviceSynchronize();
+
 
 }
 
@@ -131,6 +155,8 @@ int main(){
 	// inicialización de las variables de densidad del host y dispositivo.
 	float *ne_h;
 	float *ne_d;
+	float *n_h;
+	float *n_d;
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 	int size = N*sizeof(float);
 	int size_ne = C*C*sizeof(float);
@@ -142,7 +168,7 @@ int main(){
 	vx_h = (float *)malloc(size);
 	vy_h = (float *)malloc(size);
 	ne_h = (float *)malloc(size_ne);
-
+    n_h  = (float *)malloc(size_ne);
 //////////////////////////////////////////////////////////////////////////////////////////////////////
 	//reserva de memoria del dispositivo.
 	cudaMalloc((void **)&rx_d,size);
@@ -150,6 +176,7 @@ int main(){
 	cudaMalloc((void **)&vx_d,size);
 	cudaMalloc((void **)&vy_d,size);
 	cudaMalloc((void **)&ne_d,size_ne);
+	cudaMalloc((void **)&n_d,size_ne);
 	cudaMalloc((void **)&jx_d,size);
 	cudaMalloc((void **)&jy_d,size);
 	cudaMalloc((void **)&yx_d,size);
@@ -175,9 +202,11 @@ int main(){
 
 	calculoDensidadInicializacionCeldas<<<blockSize,dimBlock>>>(rx_d,ry_d,jx_d,jy_d,yx_d,N,C,L);
 	cudaDeviceSynchronize();
+//
+//	calculoDensidad<<<1,1>>>(ne_d,jx_d,jy_d,yx_d,C,L,N);//proceso de mejora.
+//	cudaDeviceSynchronize();
 
-	calculoDensidad<<<1,1>>>(ne_d,jx_d,jy_d,yx_d,C,L,N);//proceso de mejora.
-	cudaDeviceSynchronize();
+	Output(ne_d,n_d,jx_d,jy_d,yx_d, C,L,N);
 
 
 
@@ -194,6 +223,10 @@ int main(){
 	cudaMemcpy(vy_h, vy_d, size, cudaMemcpyDeviceToHost);
 	//inicializacion densidades
 	cudaMemcpy(ne_h, ne_d, size_ne, cudaMemcpyDeviceToHost);
+	//NormalizacionDensidades
+	cudaMemcpy(n_h, n_d, size_ne, cudaMemcpyDeviceToHost);
+
+
 
 
 	ofstream init;
@@ -215,6 +248,17 @@ int main(){
 					init.close();
 					cout<<salida<<" "<<dx<<endl;
 
+		init.open("densidadNormalizada.txt");
+					for (int i = 0; i < C; i++){
+						for (int j = 0; j < C; j++){
+						init<<n_h[(i*C)+j]<<" ";
+						}
+					init<<endl;
+					}
+
+					init.close();
+					cout<<salida<<" "<<dx<<endl;
+
 
 
 
@@ -223,11 +267,13 @@ int main(){
 	free(vx_h);
 	free(vy_h);
 	free(ne_h);
+	free(n_h);
 	cudaFree(rx_d);
 	cudaFree(ry_d);
 	cudaFree(vx_d);
 	cudaFree(vy_d);
 	cudaFree(ne_d);
+	cudaFree(n_d);
 
 	return (0);
 
