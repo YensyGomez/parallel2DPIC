@@ -154,32 +154,33 @@ __global__ void normalizaciónSalidaUt_F(cufftComplex *n_C, cufftComplex *uT_F, 
 
 }
 // calculo de Poisson.
-//__global__ void calculoPoisson(cufftComplex *uT_F, cufftComplex *uC_P, float L, int C){
-//	uT_F[0.0].x =0.;
-//
-//	complex<float> i(0.0, L); //creamos una variable compleja para poder aplicar la discretizacion.
-//	complex<float> W = exp(2.0 * M_PI * i / float (C));
-//	complex<float> Wm = L, Wn = L;
-//	for (int i= 0; i< C; i+)
-//	{
-//		for (int j= 0; j< C; j++)
-//		{
-//			complex<float> denom = 4.0;
-//			denom -= Wm + L / Wm + Wn + L / Wn; //se calcula el denominador para cada celda, segun el equema de discretizacion
-//			if (denom != 0.0){
-//				uT_F[i*C+j].x *= dx *dx / denom.x;
-//				uT_F[i*C+j].y *= dx *dx / denom.y;
-//			}
-//			Wn *= W;//se multiplica por la constante W
-//		}
-//		Wm *= W;
-//	}
-//
-//	uT_F[0.0].x=0.;
-//	uT_F[0.0].y=0.;
-////
-//	/// asiganr a uC_P
-//}
+__global__ void calculoPoisson(cufftComplex *uT_F, cufftComplex *uC_P, float L, int C){
+	uT_F[0.0].x =0.;
+
+	float i(0.0, L); //creamos una variable compleja para poder aplicar la discretizacion.
+	float W = exp(2.0 * M_PI * i / float (C));
+	float Wm = L, Wn = L;
+	float denom = 4.0;
+	float dx=L/float(C-1); //delta x, el tamaño de la malla
+	for (int i= 0; i< C; i+)
+	{
+		for (int j= 0; j< C; j++)
+		{
+			denom -= Wm + L / Wm + Wn + L / Wn; //se calcula el denominador para cada celda, segun el equema de discretizacion
+			if (denom != 0.0){
+				uT_F[i*C+j].x *= dx *dx / denom;
+				uT_F[i*C+j].y *= dx *dx / denom;
+			}
+			Wn *= W;//se multiplica por la constante W
+		}
+		Wm *= W;
+	}
+
+	uT_F[0.0].x=0.;
+	uT_F[0.0].y=0.;
+
+	// asiganr a uC_P
+}
 __global__ void realToComplex( cufftComplex *uT_I,float *poisson, int C){
 
   int Idx = blockIdx.x*blockDim.x + threadIdx.x;
@@ -300,12 +301,13 @@ int main(){
 	//calculo de Poisson.
 	realToComplex<<<blockSize,dimBlock2>>>(n_d,n_C,C);
 	cufftHandle plan;
-	cufftPlan2D(&plan,C,C,CUFFT_C2C);
+	cufftPlan2d(&plan,C,C,CUFFT_C2C);
 	cufftExecC2C(plan,n_C,uT_F,CUFFT_FORWARD);
 	normalizaciónSalidaUt_F<<<blockSize,dimBlock2>>>(n_C,uT_F,C);
 	//calculoPoisson<<<blockSize,dimBlock2>>>(uT_F,uC_P, L, C);
 	cufftExecC2C(plan,uC_P,uT_I,CUFFT_INVERSE);
 	realToComplex<<<blockSize,dimBlock2>>>( uT_I,poisson_d,C);
+
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 	//Asignar los datos del dispositivo al host.
 	//posición en x.
