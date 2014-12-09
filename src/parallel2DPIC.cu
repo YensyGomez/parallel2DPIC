@@ -162,14 +162,9 @@ __global__ void normalizacionSalidaTranfForward(cufftComplex *T_F, cufftComplex 
 	  }
 }
 
-
-
-
-
-
 /////////////////////////////////////////////////////////////////////////////////////////////////////
 
-__global__ void ComplexToReal( cufftComplex *T_F_N, float2 *poisson_d,  int C){
+__global__ void ComplexToFloat2( cufftComplex *T_F_N, float2 *poisson_d,  int C){
 
   int i = blockIdx.x*blockDim.x + threadIdx.x;
   if(i<C*C){
@@ -180,13 +175,14 @@ __global__ void ComplexToReal( cufftComplex *T_F_N, float2 *poisson_d,  int C){
 
   }
 }
+
 /////////////////////////////////////////////////////////////////////////////////////////////////////
 ///*Calculo Poisson*/
 
-void Poisson(float2 *poisson_h, float L, int C){
+void Poisson(float2 *calculoPoisson_h, float L, int C){// pasar a calculo paralelo
 	float dx = L / float (C);
-	poisson_h[0].x=0.0;
-	poisson_h[0].y=0.0;
+	calculoPoisson_h[0].x=0.0;
+	calculoPoisson_h[0].y=0.0;
 	float2 i;
 	i.x=0.0;
 	i.y=L; //creamos una variable compleja para poder aplicar la discretizacion.
@@ -209,8 +205,8 @@ void Poisson(float2 *poisson_h, float L, int C){
 			denom.x -= Wm.x + L / Wm.x + Wn.x + L / Wn.x;
 			denom.y -= Wm.y + L / Wm.y + Wn.y + L / Wn.y;//se calcula el denominador para cada celda, segun el equema de discretizacion
 			if (denom.x!= 0.0 && denom.y!= 0.0){
-				poisson_h[m*C+n].x *= dx *dx / denom.x;
-				poisson_h[m*C+n].y *= dx *dx / denom.y;
+				calculoPoisson_h[m*C+n].x *= dx *dx / denom.x;
+				calculoPoisson_h[m*C+n].y *= dx *dx / denom.y;
 			}
 			Wn.x *= W.x;//se multiplica por la constante W
 			Wn.y *= W.y;
@@ -221,35 +217,28 @@ void Poisson(float2 *poisson_h, float L, int C){
 }
 
 
+//////////////////////////////////////////////////////////////////////////////////////////////////////
+
+__global__ void float2ToComplex(float2 *calculoPoisson_d, cufftComplex *Phi_Poisson, int C){
+
+  int i = blockIdx.x*blockDim.x + threadIdx.x;
+  if(i<C*C){
+	  Phi_Poisson[i].x = calculoPoisson_d[i].x;
+	  Phi_Poisson[i].y = calculoPoisson_d[i].y;
+  }
+}
+//////////////////////////////////////////////////////////////////////////////////////////////////////
+__global__ void ComplexToReal(cufftComplex *T_I, float *poissonFinal_d, int C){
+
+	int i = blockIdx.x*blockDim.x + threadIdx.x;
+	  if(i<C*C){
+		  poissonFinal_d[i] =T_I[i].x/float(1.e-6);
+
+	  }
+}
 
 
-
-
-//
-//void Poisson(float2 *poisson_h, float L, int C){
-//	 poisson_h[0].x=0.0;
-//	 poisson_h[0].y=0.0;
-//	 float2 i(0.0, L); //creamos una variable compleja para poder aplicar la discretizacion.
-//	 float2 W = exp(2.0 * M_PI * i / float(C));
-//	 float2  Wn = L;
-//	 for (int i = 0; i< C*C; i++)
-//	 {
-//
-//			float2 denom = 4.0;
-//			denom -= Wn + L / Wn; //se calcula el denominador para cada celda, segun el equema de discretizacion
-//			if (denom.x != 0.0 && denom.y != 0.0){
-//				poisson_h[i].x*= dx *dx / denom.x;
-//				poisson_h[i].y*= dx *dx / denom.y;
-//			}
-//			Wn *= W;//se multiplica por la constante W
-//	 }
-//}
-
-
-
-
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////////////////////////
 int main(){
 	// Parametros
 	L = 64.0;            // dominio de la solucion 0 <= x <= L (en longitudes de debye)
@@ -277,8 +266,12 @@ int main(){
 	float *ne_d;
 	float *n_h; // densidad normalizada.
 	float *n_d; // densidad normalizada del dispositivo.
-	float2 *poisson_h;
-	float2 *poisson_d;
+	float2 *calculoPoisson_h;
+	float2 *calculoPoisson_d;
+	float  * poissonFinal_h;
+	float  * poissonFinal_d;
+
+
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 	/*Crear la variable tipo cufftComplex*/
@@ -301,7 +294,9 @@ int main(){
 	vy_h = (float *)malloc(size);
 	ne_h = (float *)malloc(size_ne);
 	n_h = (float *)malloc(size_ne);
-	poisson_h=(float2 *)malloc(size_ne2);
+	calculoPoisson_h=(float2 *)malloc(size_ne2);
+	poissonFinal_h=(float *)malloc(size_ne);
+
 
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -315,7 +310,9 @@ int main(){
 	cudaMalloc((void **)&jx_d,size);
 	cudaMalloc((void **)&jy_d,size);
 	cudaMalloc((void **)&yx_d,size);
-	cudaMalloc((void **)&poisson_d,size_ne2);
+	cudaMalloc((void **)&calculoPoisson_d,size_ne2);
+	cudaMalloc((void **)&poissonFinal_d,size_ne);
+
 /////////////////////////////////////////////////////////////////////////////////////////////////////////
 	/*Asignación de memoria a la variable tipo cufftComplex */
 	cudaMalloc((void **)&n_d_C,sizeof(cufftComplex)*C*C);
@@ -346,10 +343,6 @@ int main(){
 	calculoDensidadInicializacionCeldas<<<blockSize,dimBlock>>>(rx_d,ry_d,jx_d,jy_d,yx_d,N,C,L);
 	cudaDeviceSynchronize();
 
-//	calculoDensidad<<<1,1>>>(ne_d,jx_d,jy_d,yx_d,C,L,N);//proceso de mejora.
-//	cudaDeviceSynchronize();
-
-	//funcion Calculo densidad.
 	//funcion Calculo densidad.
 	Output(ne_d,n_d,jx_d,jy_d,yx_d, C,L,N);     // Calculo de la densidad y normalización de la densidad.
 	/////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -367,20 +360,34 @@ int main(){
 
 	/*Calculo Poisson*/
 
-
-//	calculoPoisson<<<1,1>>>(T_F_N,Phi_Poisson, C, L);
-//	cudaDeviceSynchronize();
-
-	/*Calculo de la transformada Inversa*/
-	 ComplexToReal<<<blockSize,dimBlock2>>>(T_F_N,poisson_d,C);
+	 ComplexToFloat2<<<blockSize,dimBlock2>>>(T_F_N,calculoPoisson_d,C);
 	 cudaDeviceSynchronize();
 
+	 //Comprobacion del resultado de la transformada hacia adelante.
+	 cudaMemcpy(calculoPoisson_h, calculoPoisson_d, size_ne2, cudaMemcpyDeviceToHost);
+
+	 //Calculo Poisson antes de la transformada inversa
+	 Poisson(calculoPoisson_h,L,C);
+
+	 // Pasar el calculo de Poisson al dispositivo
+
+	 cudaMemcpy(calculoPoisson_d, calculoPoisson_h, size_ne2, cudaMemcpyHostToDevice);
+
+	 //Hacer la transformada Inversa
+	 float2ToComplex<<<blockSize,dimBlock2>>>(calculoPoisson_d,Phi_Poisson,C);
+	 cudaDeviceSynchronize();
+
+	 //Aplicar la transformada inversa de la matriz
+
+	 cufftExecC2C(plan,Phi_Poisson,T_I,CUFFT_INVERSE);
+
+	 //tomando la transformada final.
+
+	 ComplexToReal<<<blockSize,dimBlock2>>>(T_I,poissonFinal_d,C);
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 
-
-
-
-
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 	//posicion en x.
 	cudaMemcpy(rx_h, rx_d, size, cudaMemcpyDeviceToHost);
 
@@ -396,21 +403,10 @@ int main(){
 	cudaMemcpy(ne_h, ne_d, size_ne, cudaMemcpyDeviceToHost);
 	//normalización de la densidad.
 	cudaMemcpy(n_h, n_d, size_ne, cudaMemcpyDeviceToHost);
-	//Comprobacion del resultado de la transformada hacia adelante.
-	cudaMemcpy(poisson_h, poisson_d, size_ne2, cudaMemcpyDeviceToHost);
-
-
-
-
-
-	/////////////////////////////////////////////////////////////////////////////////////////////////////////
-	Poisson(poisson_h,L,C);
-
+	//calculo de la transformada rapida de fourier despues de la inversa.
+	cudaMemcpy(poissonFinal_h, poissonFinal_d, size_ne, cudaMemcpyDeviceToHost);
 
 	/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-
-
 
 	ofstream init;
 		init.open("distribucionInicial.txt");
@@ -442,27 +438,33 @@ int main(){
 					init.close();
 					cout<<salida<<" "<<dx<<endl;
 
-	init.open("poisson.txt");
+	init.open("CalculoPoissonAntesdeLaTranformadaInversa.txt");
 				for (int i = 0; i < C; i++){
 					for (int j = 0; j < C; j++){
-					init<<poisson_h[(i*C)+j].x<<" ";
+					init<<calculoPoisson_h[(i*C)+j].x<<" ";
 					}
 				init<<endl;
 				}
 
 				init.close();
+	init.open("DespuesTransformadaInversa");
+					for (int i = 0; i < C; i++){
+						for (int j = 0; j < C; j++){
+						init<<poissonFinal_h[(i*C)+j]<<" ";
+						}
+					init<<endl;
+					}
 
-
-
-
-
+					init.close();
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+				/*Liberar memoria*/
 	free(rx_h);
 	free(ry_h);
 	free(vx_h);
 	free(vy_h);
 	free(ne_h);
 	free(n_h);
-	free(poisson_h);
+	free(calculoPoisson_h);
 	cufftDestroy(plan);
 	cudaFree(rx_d);
 	cudaFree(ry_d);
@@ -475,8 +477,7 @@ int main(){
 	cudaFree(T_F_N);
 	cudaFree(Phi_Poisson);
 	cudaFree(T_I);
-	cudaFree(poisson_d);
-
+	cudaFree(calculoPoisson_d);
 	return (0);
 
 }
