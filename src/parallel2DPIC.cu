@@ -236,9 +236,45 @@ __global__ void ComplexToReal(cufftComplex *T_I, float *poissonFinal_d, int C){
 
 	  }
 }
+//////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Calculo campo electrico.
+
+__global__ void ElectricBordes(float *poissonFinal_d, float *Ex, float *Ey, float L, int C) // recibe el potencial electroestatico calculado por la funcion poisson  y se calcula el campo electrico, tanto para X como para Y
+{
+  int i = blockIdx.x*blockDim.x + threadIdx.x;
+  float dx = L / float (C); // el delta de x representa el tamano de la malla
+
+  if(i<C){
+	  Ex[i*C]=(poissonFinal_d[((i+1)*C)-1] - poissonFinal_d[(i*C)+1])/(2. * dx);// hallando el campo en x, en la primera columna
+	  Ex[((i+1)*C)-1] = (poissonFinal_d[((i+1)*C)-2] - poissonFinal_d[(i*C)]) / (2. * dx);// hallando el campo en x, en la ultima columna
+	  Ey[((C-1)*C)+i] = (poissonFinal_d[((C-2)*C)+i] - poissonFinal_d[i]) / (2. * dx); //hallando el campo en "y" para la ultima fila
+	  Ey[i] = (poissonFinal_d[((C-1)*C)+i] - poissonFinal_d[i+C]) / (2. * dx);//hallando el campo para la primera fila y la ultima
+  }
+
+}
+
+__global__ void calculoCampoElectricoX(float *poissonFinal_d, float *Ex, float L, int C){
+	 int i = blockIdx.x*blockDim.x + threadIdx.x;
+	 int j = blockIdx.y*blockDim.y + threadIdx.y;
+	 float dx = L / float (C); // el delta de x representa el tamano de la malla
+	 if(i<C && j<C-2){
+		 Ex[j+(C*i)] = (poissonFinal_d[j-1] - poissonFinal_d[j+1]) / (2. * dx);
+	 }
+
+}
+
+__global__ void calculoCampoElectricoY(float *poissonFinal_d, float *Ey, float L, int C){
+	int i = blockIdx.x*blockDim.x + threadIdx.x;
+	float dx = L / float (C); // el delta de x representa el tamano de la malla
+	if(i<((C*C)-C)){
+		 Ey[i] = (poissonFinal_d[i-C] - poissonFinal_d[i+C]) / (2. * dx);
+
+	}
+
+}
 
 
-//////////////////////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////////////////////////////
 int main(){
 	// Parametros
 	L = 64.0;            // dominio de la solucion 0 <= x <= L (en longitudes de debye)
@@ -270,6 +306,10 @@ int main(){
 	float2 *calculoPoisson_d;
 	float  * poissonFinal_h;
 	float  * poissonFinal_d;
+	float *Ex_h;
+	float *Ey_h; //campoElectrico
+	float *Ex_d;
+	float *Ey_d; // Campo Electrico en el dispositivo.
 
 
 
@@ -296,6 +336,8 @@ int main(){
 	n_h = (float *)malloc(size_ne);
 	calculoPoisson_h=(float2 *)malloc(size_ne2);
 	poissonFinal_h=(float *)malloc(size_ne);
+	Ex_h = (float *)malloc(size_ne);
+	Ey_h = (float *)malloc(size_ne);
 
 
 
@@ -312,6 +354,9 @@ int main(){
 	cudaMalloc((void **)&yx_d,size);
 	cudaMalloc((void **)&calculoPoisson_d,size_ne2);
 	cudaMalloc((void **)&poissonFinal_d,size_ne);
+	cudaMalloc((void **)&Ex_d,size_ne);
+	cudaMalloc((void **)&Ey_d,size_ne);
+
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////
 	/*Asignación de memoria a la variable tipo cufftComplex */
@@ -330,7 +375,9 @@ int main(){
 	float blockSize = 1024;
 	dim3 dimBlock (ceil(N/blockSize), 1, 1);
 	dim3 dimBlock2 (ceil(C*C/blockSize), 1, 1);
+	dim3 dimBlock3 (ceil(C*C/blockSize), ceil(C*C/blockSize), 1);
 	dim3 dimGrid (blockSize, 1, 1);
+	dim3 dimGrid3 (blockSize, blockSize, 1);
 	int seed = time(NULL);
 
 
@@ -384,7 +431,19 @@ int main(){
 	 //tomando la transformada final.
 
 	 ComplexToReal<<<blockSize,dimBlock2>>>(T_I,poissonFinal_d,C);
+	 cudaDeviceSynchronize();
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	 ElectricBordes<<<blockSize,dimBlock2>>>(poissonFinal_d,Ex_d,Ey_d, L,C); // Campo Electrico en los bordes.
+	 cudaDeviceSynchronize();
+
+	 /*Calculo del campo electrico para x*/
+	 calculoCampoElectricoX<<<dimGrid3,dimBlock3>>>(poissonFinal_d,Ex_d,L,C); // se utilizan dos hilos de debe organizar la manera como se envian.
+
+	 /*Calculo del campo electrico para y*/
+	 calculoCampoElectricoY<<<blockSize,dimBlock2>>>(poissonFinal_d, Ey_d,L,C);
+	 cudaDeviceSynchronize();
+
+
 
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -405,6 +464,9 @@ int main(){
 	cudaMemcpy(n_h, n_d, size_ne, cudaMemcpyDeviceToHost);
 	//calculo de la transformada rapida de fourier despues de la inversa.
 	cudaMemcpy(poissonFinal_h, poissonFinal_d, size_ne, cudaMemcpyDeviceToHost);
+	//Calculo de Campo Electrico Ex, Ey.
+	cudaMemcpy(Ex_h, Ex_d, size_ne, cudaMemcpyDeviceToHost);
+	cudaMemcpy(Ey_h, Ey_d, size_ne, cudaMemcpyDeviceToHost);
 
 	/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -447,7 +509,8 @@ int main(){
 				}
 
 				init.close();
-	init.open("DespuesTransformadaInversa");
+
+	init.open("DespuesTransformadaInversaPoissonFinal");
 					for (int i = 0; i < C; i++){
 						for (int j = 0; j < C; j++){
 						init<<poissonFinal_h[(i*C)+j]<<" ";
@@ -456,6 +519,16 @@ int main(){
 					}
 
 					init.close();
+
+
+	init.open("CamposElectricos");
+
+					for (int i = 0; i < C*C; i++){
+						init<<Ex_h[i]<<" "<<Ey_h[i]<<endl;
+					}
+
+					init.close();
+
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 				/*Liberar memoria*/
 	free(rx_h);
@@ -465,7 +538,10 @@ int main(){
 	free(ne_h);
 	free(n_h);
 	free(calculoPoisson_h);
+	free(poissonFinal_h);
 	cufftDestroy(plan);
+	free(Ex_h);
+	free(Ey_h);
 	cudaFree(rx_d);
 	cudaFree(ry_d);
 	cudaFree(vx_d);
@@ -478,6 +554,9 @@ int main(){
 	cudaFree(Phi_Poisson);
 	cudaFree(T_I);
 	cudaFree(calculoPoisson_d);
+	cudaFree(poissonFinal_d);
+	cudaFree(Ex_d);
+	cudaFree(Ey_d);
 	return (0);
 
 }
