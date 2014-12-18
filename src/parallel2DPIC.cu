@@ -115,13 +115,15 @@ __global__ void normalizacionDensidad(float *ne,float *n, int N, int C, float L)
 }
 
 // función que integra la densidad normalizada con la otra densidad
-void Output(float *ne_d, float *n_d, int *jx_d,int *jy_d,float *yx_d,int C,float L,int N){
+void Densidad(float *ne_d, float *n_d, float *rx_d, float *ry_d, int *jx_d,int *jy_d,float *yx_d,int C,float L,int N){
 	//definicion de los bloques.
 	float blockSize = 1024;
 	dim3 dimBlock (ceil(N/blockSize), 1, 1);
 	dim3 dimBlock2 (ceil(C*C/blockSize), 1, 1);
 	dim3 dimGrid (blockSize, 1, 1);
 
+	calculoDensidadInicializacionCeldas<<<blockSize,dimBlock>>>(rx_d,ry_d,jx_d,jy_d,yx_d,N,C,L);
+	cudaDeviceSynchronize();
 	calculoDensidad<<<1,1>>>(ne_d,jx_d,jy_d,yx_d,C,L,N);//proceso de mejora.
 	cudaDeviceSynchronize();
 	normalizacionDensidad<<<blockSize,dimBlock2>>>(ne_d,n_d,N,C,L);
@@ -170,8 +172,6 @@ __global__ void ComplexToFloat2( cufftComplex *T_F_N, float2 *poisson_d,  int C)
   if(i<C*C){
 	  poisson_d[i].x=T_F_N[i].x;
 	  poisson_d[i].y =T_F_N[i].y;
-
-	  //float(1.e+7);
 
   }
 }
@@ -236,6 +236,65 @@ __global__ void ComplexToReal(cufftComplex *T_I, float *poissonFinal_d, int C){
 
 	  }
 }
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void calculoPotencialElectroestatico(float *n_d, int C, cufftComplex *n_d_C, cufftComplex *T_F, cufftComplex *T_F_N, cufftComplex *Phi_Poisson,
+		cufftComplex *T_I,float2 *calculoPoisson_d, float2 *calculoPoisson_h,float *poissonFinal_d){
+
+		int size_ne2 = C*C*sizeof(float2);
+
+		float blockSize = 1024;
+		dim3 dimBlock (ceil(N/blockSize), 1, 1);
+		dim3 dimBlock2 (ceil(C*C/blockSize), 1, 1);
+		dim3 dimBlock3 (ceil(C*C/blockSize), ceil(C*C/blockSize), 1);
+		dim3 dimGrid (blockSize, 1, 1);
+		dim3 dimGrid3 (blockSize, blockSize, 1);
+
+		realTocomplex<<<blockSize,dimBlock2>>>(n_d, n_d_C,C);
+		cudaDeviceSynchronize();
+
+		cufftHandle plan;
+		cufftPlan2d(&plan,C,C,CUFFT_C2C);
+		cufftExecC2C(plan,n_d_C,T_F,CUFFT_FORWARD); // transformada hacia adelante en x and y.
+
+		/*Valor de la transformada hacia adelante de latransformada rápida normalizada*/
+
+		normalizacionSalidaTranfForward<<<blockSize,dimBlock2>>>(T_F,T_F_N, C);
+		cudaDeviceSynchronize();
+
+		/*Calculo Poisson*/
+
+		 ComplexToFloat2<<<blockSize,dimBlock2>>>(T_F_N,calculoPoisson_d,C);
+		 cudaDeviceSynchronize();
+
+		 //Comprobacion del resultado de la transformada hacia adelante.
+		 cudaMemcpy(calculoPoisson_h, calculoPoisson_d, size_ne2, cudaMemcpyDeviceToHost);
+
+		 //Calculo Poisson antes de la transformada inversa
+		 Poisson(calculoPoisson_h,L,C);
+
+		 // Pasar el calculo de Poisson al dispositivo
+
+		 cudaMemcpy(calculoPoisson_d, calculoPoisson_h, size_ne2, cudaMemcpyHostToDevice);
+
+		 //Hacer la transformada Inversa
+		 float2ToComplex<<<blockSize,dimBlock2>>>(calculoPoisson_d,Phi_Poisson,C);
+		 cudaDeviceSynchronize();
+
+		 //Aplicar la transformada inversa de la matriz
+
+		 cufftExecC2C(plan,Phi_Poisson,T_I,CUFFT_INVERSE);
+
+		 //tomando la transformada final.
+
+		 ComplexToReal<<<blockSize,dimBlock2>>>(T_I,poissonFinal_d,C);
+		 cudaDeviceSynchronize();
+
+		 cufftDestroy(plan);
+
+}
+
+
 //////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Calculo campo electrico.
 
@@ -273,8 +332,101 @@ __global__ void calculoCampoElectricoY(float *poissonFinal_d, float *Ey, float L
 
 }
 
+////////////////////////////////////////////////////////////////////////////////////////////////////////
+void calculoCampoElectricoXY(float *poissonFinal_d, float *Ey_d,float *Ex_d, float L, int C ){
+		float blockSize = 1024;
+		dim3 dimBlock (ceil(N/blockSize), 1, 1);
+		dim3 dimBlock2 (ceil(C*C/blockSize), 1, 1);
+		dim3 dimBlock3 (ceil(C*C/blockSize), ceil(C*C/blockSize), 1);
+		dim3 dimGrid (blockSize, 1, 1);
+		dim3 dimGrid3 (blockSize, blockSize, 1);
 
-//////////////////////////////////////////////////////////////////////////////////////////////////////////
+	 	 ElectricBordes<<<blockSize,dimBlock2>>>(poissonFinal_d,Ex_d,Ey_d, L,C); // Campo Electrico en los bordes.
+		 cudaDeviceSynchronize();
+
+		 /*Calculo del campo electrico para x*/
+		 calculoCampoElectricoX<<<dimGrid3,dimBlock3>>>(poissonFinal_d,Ex_d,L,C); // se utilizan dos hilos de debe organizar la manera como se envian.
+
+		 /*Calculo del campo electrico para y*/
+		 calculoCampoElectricoY<<<blockSize,dimBlock2>>>(poissonFinal_d, Ey_d,L,C);
+		 cudaDeviceSynchronize();
+
+
+}
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+__global__ void cargar(float *posicionx,float *posiciony, float *velocidadx,float *velocidady, float *salidaxy, int N){
+
+	int i = blockIdx.x*blockDim.x + threadIdx.x;
+	if(i<N){
+		salidaxy[i] = posicionx[i];
+		salidaxy[i] = posiciony[i];
+		salidaxy[N+i] = velocidadx[i];
+		salidaxy[N+i] = velocidady[i];
+
+	}
+
+}
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+__global__ void descargar(float *posicionx,float *posiciony, float *velocidadx,float *velocidady, float *salidaxy, int N, float L){
+
+	int i = blockIdx.x*blockDim.x + threadIdx.x;
+	if(i<N){
+		posicionx[i] = salidaxy[i];
+		posiciony[i] = salidaxy[i];
+		velocidadx[i] = salidaxy[N+i];
+		velocidady[i] = salidaxy[N+i];
+
+	}
+
+}
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+__global__ void escapeParticulas(float *posicionx_d, float *posiciony_d, int N, float L){
+	int i = blockIdx.x*blockDim.x + threadIdx.x;
+	if(i<N){
+		if (posicionx_d[i] < 0.) posicionx_d[i] += L;
+		if (posiciony_d[i] < 0.) posiciony_d[i] += L;
+		if (posicionx_d[i] > L) posicionx_d[i] -= L;
+		if (posiciony_d[i] > L) posiciony_d[i] -= L;
+	}
+
+}
+
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+//void evaluar(float t,  float *salidaxy_d, int N, float *derivada1,float *derivada2,
+//		float *posicionx_d, float *velocidadx_d,float *posiciony_d, float *velocidady_d){
+//
+//	float *posicionX, *posicionY, *velocidadX,*velocidadY, *derivadaX, *derivadaVelx,*derivadaY, *derivadaVely;
+//	float *rho,*phi, *campoElectricoX, *campoElectricoY;
+//
+//	float blockSize = 1024;
+//	dim3 dimBlock (ceil(N/blockSize), 1, 1);
+//	dim3 dimBlock2 (ceil(C*C/blockSize), 1, 1);
+//	dim3 dimBlock3 (ceil(C*C/blockSize), ceil(C*C/blockSize), 1);
+//	dim3 dimGrid (blockSize, 1, 1);
+//	dim3 dimGrid3 (blockSize, blockSize, 1);
+//	// carga los datos de las posiciones y velcidades del vestor salida.
+//	descargar<<<blockSize,dimBlock>>>(posicionx_d,velocidadx_d,posiciony_d, velocidady_d,salidaxy_d,N,L);
+//	cudaDeviceSynchronize();
+//	// analiza el número de partículas que estan por fuera del espacio de simulación.
+//	escapeParticulas<<<blockSize,dimBlock>>>(posicionx_d,posiciony_d, N, L);
+//	cudaDeviceSynchronize();
+//
+//	Densidad(ne_d,n_d,jx_d,jy_d,yx_d, C,L,N);
+//
+//
+//
+//}
+
+
+
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
 int main(){
 	// Parametros
 	L = 64.0;            // dominio de la solucion 0 <= x <= L (en longitudes de debye)
@@ -282,6 +434,8 @@ int main(){
 	N = 10000;            // Numero de particulas
 	C = 64;            // Número de celdas.
 	float vb = 3.0;    // velocidad promedio de los electrones
+	float t=0.0;
+
 	//double kappa = 2. * M_PI / (L);
 	//float dt=0.1;    // delta tiempo (en frecuencias inversas del plasma)
 	//float tmax=10000;  // cantidad de iteraciones. deben ser 100 mil segun el material
@@ -291,18 +445,30 @@ int main(){
 	 float dx = L / float (C);
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////
+
 //Inicializacion de la posición de las particulas en x, y y velocidad en vx,vy del host y dispositivo.
 	float *rx_h,*ry_h,*vx_h,*vy_h;
 	float *rx_d,*ry_d, *vx_d,*vy_d;
 	int *jx_d, *jy_d;
 	float *yx_d;
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+
 	// inicialización de las variables de densidad del host y dispositivo.
 	float *ne_h;
 	float *ne_d;
 	float *n_h; // densidad normalizada.
 	float *n_d; // densidad normalizada del dispositivo.
 	float2 *calculoPoisson_h;
+	float *posicionx_h;
+	float *velocidadx_h;
+	float *salidaxy_h;
+	float *posiciony_h;
+	float *velocidady_h;
+	float *posicionx_d;
+	float *velocidadx_d;
+	float *salidaxy_d;
+	float *posiciony_d;
+	float *velocidady_d;
 	float2 *calculoPoisson_d;
 	float  * poissonFinal_h;
 	float  * poissonFinal_d;
@@ -313,7 +479,9 @@ int main(){
 
 
 
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+
 	/*Crear la variable tipo cufftComplex*/
 	cufftComplex *n_d_C; // covertir la densidad en una variable compleja.
 	cufftComplex *T_F;	 // primer paso de la transformada hacia adelante
@@ -322,11 +490,13 @@ int main(){
 	cufftComplex *T_I;   // Transformada Inversa.
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+
 	int size = N*sizeof(float);
 	int size_ne = C*C*sizeof(float);
 	int size_ne2 = C*C*sizeof(float2);
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
+
 	//reserva en memoria al host
 	rx_h = (float *)malloc(size);
 	ry_h = (float *)malloc(size);
@@ -338,7 +508,11 @@ int main(){
 	poissonFinal_h=(float *)malloc(size_ne);
 	Ex_h = (float *)malloc(size_ne);
 	Ey_h = (float *)malloc(size_ne);
-
+	posicionx_h = (float *)malloc(size);
+	velocidadx_h =  (float *)malloc(size);
+	salidaxy_h = (float *)malloc(size);
+	posiciony_h = (float *)malloc(size);
+	velocidady_h =  (float *)malloc(size);
 
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -356,6 +530,12 @@ int main(){
 	cudaMalloc((void **)&poissonFinal_d,size_ne);
 	cudaMalloc((void **)&Ex_d,size_ne);
 	cudaMalloc((void **)&Ey_d,size_ne);
+	cudaMalloc((void **)&posicionx_d,size);
+	cudaMalloc((void **)&velocidadx_d,size);
+	cudaMalloc((void **)&salidaxy_d,size);
+	cudaMalloc((void **)&posiciony_d,size);
+	cudaMalloc((void **)&velocidady_d,size);
+
 
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -391,62 +571,15 @@ int main(){
 	cudaDeviceSynchronize();
 
 	//funcion Calculo densidad.
-	Output(ne_d,n_d,jx_d,jy_d,yx_d, C,L,N);     // Calculo de la densidad y normalización de la densidad.
-	/////////////////////////////////////////////////////////////////////////////////////////////////////
-	realTocomplex<<<blockSize,dimBlock2>>>(n_d, n_d_C,C);
-	cudaDeviceSynchronize();
+	Densidad(ne_d,n_d,rx_d,ry_d,jx_d,jy_d,yx_d, C,L,N);     // Calculo de la densidad y normalización de la densidad.
+	///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	//calculo del potencial Electroestatico.
+	calculoPotencialElectroestatico(n_d, C, n_d_C, T_F, T_F_N,Phi_Poisson, T_I,calculoPoisson_d,calculoPoisson_h,poissonFinal_d);
+	//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	//Calculo campo Electrico.
+	calculoCampoElectricoXY(poissonFinal_d, Ey_d,Ex_d,L,C );
 
-	cufftHandle plan;
-	cufftPlan2d(&plan,C,C,CUFFT_C2C);
-	cufftExecC2C(plan,n_d_C,T_F,CUFFT_FORWARD); // transformada hacia adelante en x and y.
-
-	/*Valor de la transformada hacia adelante de latransformada rápida normalizada*/
-
-	normalizacionSalidaTranfForward<<<blockSize,dimBlock2>>>(T_F,T_F_N, C);
-	cudaDeviceSynchronize();
-
-	/*Calculo Poisson*/
-
-	 ComplexToFloat2<<<blockSize,dimBlock2>>>(T_F_N,calculoPoisson_d,C);
-	 cudaDeviceSynchronize();
-
-	 //Comprobacion del resultado de la transformada hacia adelante.
-	 cudaMemcpy(calculoPoisson_h, calculoPoisson_d, size_ne2, cudaMemcpyDeviceToHost);
-
-	 //Calculo Poisson antes de la transformada inversa
-	 Poisson(calculoPoisson_h,L,C);
-
-	 // Pasar el calculo de Poisson al dispositivo
-
-	 cudaMemcpy(calculoPoisson_d, calculoPoisson_h, size_ne2, cudaMemcpyHostToDevice);
-
-	 //Hacer la transformada Inversa
-	 float2ToComplex<<<blockSize,dimBlock2>>>(calculoPoisson_d,Phi_Poisson,C);
-	 cudaDeviceSynchronize();
-
-	 //Aplicar la transformada inversa de la matriz
-
-	 cufftExecC2C(plan,Phi_Poisson,T_I,CUFFT_INVERSE);
-
-	 //tomando la transformada final.
-
-	 ComplexToReal<<<blockSize,dimBlock2>>>(T_I,poissonFinal_d,C);
-	 cudaDeviceSynchronize();
-/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-	 ElectricBordes<<<blockSize,dimBlock2>>>(poissonFinal_d,Ex_d,Ey_d, L,C); // Campo Electrico en los bordes.
-	 cudaDeviceSynchronize();
-
-	 /*Calculo del campo electrico para x*/
-	 calculoCampoElectricoX<<<dimGrid3,dimBlock3>>>(poissonFinal_d,Ex_d,L,C); // se utilizan dos hilos de debe organizar la manera como se envian.
-
-	 /*Calculo del campo electrico para y*/
-	 calculoCampoElectricoY<<<blockSize,dimBlock2>>>(poissonFinal_d, Ey_d,L,C);
-	 cudaDeviceSynchronize();
-
-
-
-
-/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 	//posicion en x.
 	cudaMemcpy(rx_h, rx_d, size, cudaMemcpyDeviceToHost);
 
@@ -539,9 +672,13 @@ int main(){
 	free(n_h);
 	free(calculoPoisson_h);
 	free(poissonFinal_h);
-	cufftDestroy(plan);
 	free(Ex_h);
 	free(Ey_h);
+	free(posicionx_h);
+	free(velocidadx_h);
+	free(salidaxy_h);
+	free(posiciony_h);
+	free(velocidady_h);;
 	cudaFree(rx_d);
 	cudaFree(ry_d);
 	cudaFree(vx_d);
@@ -557,6 +694,12 @@ int main(){
 	cudaFree(poissonFinal_d);
 	cudaFree(Ex_d);
 	cudaFree(Ey_d);
+	cudaFree(posicionx_d);
+	cudaFree(velocidadx_d);
+	cudaFree(salidaxy_d);
+	cudaFree(posiciony_d);
+	cudaFree(velocidady_d);
+
 	return (0);
 
 }
