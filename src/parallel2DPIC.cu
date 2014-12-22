@@ -84,7 +84,7 @@ __global__ void inicializacionValoresReales(float *vr,int C){
 
 //Calculo de la densidad en cada celda.
 
-__global__ void calculoDensidadInicializacionCeldas(float *rx, float *ry, int *jx,int *jy,float *yx, int N, int C,float L){
+__global__ void calculoDensidadInicializacionCeldas(float *rx, float *ry, int *jx,int *jy,float *yx,float *yy, int N, int C,float L){
 	int Id = blockIdx.x*blockDim.x + threadIdx.x;
 	 float dx = L / float (C);
 	 //float dxx = L /float(C*C);
@@ -92,7 +92,10 @@ __global__ void calculoDensidadInicializacionCeldas(float *rx, float *ry, int *j
 		 jx[Id] = int(rx[Id]/dx); //posicion en x de la particula
 		 jy[Id] = int(ry[Id]/dx); //posicion en y de la particula
 		 yx[Id] = (rx[Id]/dx) - (float)jx[Id]; //posicion exacta de la particula en x de la celda "j"
+		 yy[Id] = (ry[Id]/dx) - (float)jy[Id];
     }
+
+
 
 }
 __global__ void calculoDensidad(float *ne, int *jx, int *jy,float *yx, int C, float L, int N){
@@ -115,14 +118,14 @@ __global__ void normalizacionDensidad(float *ne,float *n, int N, int C, float L)
 }
 
 // función que integra la densidad normalizada con la otra densidad
-void Densidad(float *ne_d, float *n_d, float *rx_d, float *ry_d, int *jx_d,int *jy_d,float *yx_d,int C,float L,int N){
+void Densidad(float *ne_d, float *n_d, float *rx_d, float *ry_d, int *jx_d,int *jy_d,float *yx_d,float *yy_d, int C,float L,int N){
 	//definicion de los bloques.
 	float blockSize = 1024;
 	dim3 dimBlock (ceil(N/blockSize), 1, 1);
 	dim3 dimBlock2 (ceil(C*C/blockSize), 1, 1);
 	dim3 dimGrid (blockSize, 1, 1);
 
-	calculoDensidadInicializacionCeldas<<<blockSize,dimBlock>>>(rx_d,ry_d,jx_d,jy_d,yx_d,N,C,L);
+	calculoDensidadInicializacionCeldas<<<blockSize,dimBlock>>>(rx_d,ry_d,jx_d,jy_d,yx_d,yy_d,N,C,L);
 	cudaDeviceSynchronize();
 	calculoDensidad<<<1,1>>>(ne_d,jx_d,jy_d,yx_d,C,L,N);//proceso de mejora.
 	cudaDeviceSynchronize();
@@ -354,75 +357,96 @@ void calculoCampoElectricoXY(float *poissonFinal_d, float *Ey_d,float *Ex_d, flo
 
 }
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-__global__ void cargar(float *posicionx,float *posiciony, float *velocidadx,float *velocidady, float *salidaxy, int N){
+__global__ void cargar(float *rx_d,float *ry_d, float *vx_d,float *vy_d, float *salidaxy, int N){
 
 	int i = blockIdx.x*blockDim.x + threadIdx.x;
 	if(i<N){
-		salidaxy[i] = posicionx[i];
-		salidaxy[i] = posiciony[i];
-		salidaxy[N+i] = velocidadx[i];
-		salidaxy[N+i] = velocidady[i];
+		salidaxy[i] = rx_d[i];
+		salidaxy[i] = ry_d[i];
+		salidaxy[N+i] = vx_d[i];
+		salidaxy[N+i] = vy_d[i];
 
 	}
 
 }
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-__global__ void descargar(float *posicionx,float *posiciony, float *velocidadx,float *velocidady, float *salidaxy, int N, float L){
+__global__ void descargar(float *rx_d,float *ry_d, float *vx_d, float *vy_d, float *salidaxy, int N){
 
 	int i = blockIdx.x*blockDim.x + threadIdx.x;
 	if(i<N){
-		posicionx[i] = salidaxy[i];
-		posiciony[i] = salidaxy[i];
-		velocidadx[i] = salidaxy[N+i];
-		velocidady[i] = salidaxy[N+i];
+		rx_d[i] = salidaxy[i];
+		ry_d[i] = salidaxy[i];
+		vx_d[i] = salidaxy[N+i];
+		vy_d[i] = salidaxy[N+i];
 
 	}
 
 }
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-__global__ void escapeParticulas(float *posicionx_d, float *posiciony_d, int N, float L){
+__global__ void escapeParticulas(float *rx_d,float *ry_d, int N, float L){
 	int i = blockIdx.x*blockDim.x + threadIdx.x;
 	if(i<N){
-		if (posicionx_d[i] < 0.) posicionx_d[i] += L;
-		if (posiciony_d[i] < 0.) posiciony_d[i] += L;
-		if (posicionx_d[i] > L) posicionx_d[i] -= L;
-		if (posiciony_d[i] > L) posiciony_d[i] -= L;
+		if (rx_d[i] < 0.) rx_d[i] += L;
+		if (ry_d[i] < 0.) ry_d[i] += L;
+		if (rx_d[i] > L) rx_d[i] -= L;
+		if (ry_d[i] > L) ry_d[i] -= L;
 	}
 
 }
-
-
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-//void evaluar(float t,  float *salidaxy_d, int N, float *derivada1,float *derivada2,
-//		float *posicionx_d, float *velocidadx_d,float *posiciony_d, float *velocidady_d){
-//
-//	float *posicionX, *posicionY, *velocidadX,*velocidadY, *derivadaX, *derivadaVelx,*derivadaY, *derivadaVely;
-//	float *rho,*phi, *campoElectricoX, *campoElectricoY;
-//
-//	float blockSize = 1024;
-//	dim3 dimBlock (ceil(N/blockSize), 1, 1);
-//	dim3 dimBlock2 (ceil(C*C/blockSize), 1, 1);
-//	dim3 dimBlock3 (ceil(C*C/blockSize), ceil(C*C/blockSize), 1);
-//	dim3 dimGrid (blockSize, 1, 1);
-//	dim3 dimGrid3 (blockSize, blockSize, 1);
-//	// carga los datos de las posiciones y velcidades del vestor salida.
-//	descargar<<<blockSize,dimBlock>>>(posicionx_d,velocidadx_d,posiciony_d, velocidady_d,salidaxy_d,N,L);
-//	cudaDeviceSynchronize();
-//	// analiza el número de partículas que estan por fuera del espacio de simulación.
-//	escapeParticulas<<<blockSize,dimBlock>>>(posicionx_d,posiciony_d, N, L);
-//	cudaDeviceSynchronize();
-//
-//	Densidad(ne_d,n_d,jx_d,jy_d,yx_d, C,L,N);
-//
-//
-//
-//}
+void evaluar(float *rx_d, float *ry_d, float *vx_d, float *vy_d,float *ne_d, float *n_d, int *jx_d,
+		int *jy_d, float *yx_d, float *yy_d, int C,float L,int N, cufftComplex *n_d_C, cufftComplex *T_F, cufftComplex *T_F_N,
+		cufftComplex *Phi_Poisson, cufftComplex *T_I, float2 *calculoPoisson_d, float2 *calculoPoisson_h, float *poissonFinal_d,
+		float *Ey_d,float *Ex_d,float *rx_dot_d, float *ry_dot_d, float *vx_dot_d, float *vy_dot_d){
 
 
+		float blockSize = 1024;
+		dim3 dimBlock (ceil(N/blockSize), 1, 1);
+		dim3 dimBlock2 (ceil(C*C/blockSize), 1, 1);
+		dim3 dimBlock3 (ceil(C*C/blockSize), ceil(C*C/blockSize), 1);
+		dim3 dimGrid (blockSize, 1, 1);
+		dim3 dimGrid3 (blockSize, blockSize, 1);
+		/////////////////////////////////////////////////////////////////////////////////////////
+		float *campox,*campoy;
+		/////////////////////////////////////////////////////////////////////////////////////////
+		int size_ne = C*C*sizeof(float);
+		//////////////////////////////////////////////////////////////////////////////////////////
+		campox = (float *)malloc(size_ne);
+		campoy = (float *)malloc(size_ne);
+
+		///////////////////////////////////////////////////////////////////////////////////////////
+
+		Densidad(ne_d,n_d,rx_d,ry_d,jx_d,jy_d,yx_d,yy_d,C,L,N);
+
+		///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+		calculoPotencialElectroestatico(n_d, C, n_d_C, T_F, T_F_N,Phi_Poisson, T_I,calculoPoisson_d,calculoPoisson_h,poissonFinal_d);
+
+		////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+		calculoCampoElectricoXY(poissonFinal_d, Ey_d,Ex_d,L,C );
+
+		/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+		calculoDensidadInicializacionCeldas<<<blockSize,dimBlock>>>(rx_d,ry_d,jx_d,jy_d,yx_d,yy_d,N,C,L);
+		cudaDeviceSynchronize();
+
+		/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+
+
+
+
+		/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+		free(campox);
+		free(campoy);
+
+
+}
 
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -450,7 +474,7 @@ int main(){
 	float *rx_h,*ry_h,*vx_h,*vy_h;
 	float *rx_d,*ry_d, *vx_d,*vy_d;
 	int *jx_d, *jy_d;
-	float *yx_d;
+	float *yx_d, *yy_d;
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 	// inicialización de las variables de densidad del host y dispositivo.
@@ -458,17 +482,9 @@ int main(){
 	float *ne_d;
 	float *n_h; // densidad normalizada.
 	float *n_d; // densidad normalizada del dispositivo.
-	float2 *calculoPoisson_h;
-	float *posicionx_h;
-	float *velocidadx_h;
+	float2 *calculoPoisson_h;;
 	float *salidaxy_h;
-	float *posiciony_h;
-	float *velocidady_h;
-	float *posicionx_d;
-	float *velocidadx_d;
 	float *salidaxy_d;
-	float *posiciony_d;
-	float *velocidady_d;
 	float2 *calculoPoisson_d;
 	float  * poissonFinal_h;
 	float  * poissonFinal_d;
@@ -476,9 +492,14 @@ int main(){
 	float *Ey_h; //campoElectrico
 	float *Ex_d;
 	float *Ey_d; // Campo Electrico en el dispositivo.
-
-
-
+	float *rx_dot;
+	float *ry_dot;
+	float *vx_dot;
+	float *vy_dot; // dot significa la derivada
+	float *rx_dot_d;
+	float *ry_dot_d;
+	float *vx_dot_d;
+	float *vy_dot_d; // dot significa la derivada
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -496,7 +517,6 @@ int main(){
 	int size_ne2 = C*C*sizeof(float2);
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
-
 	//reserva en memoria al host
 	rx_h = (float *)malloc(size);
 	ry_h = (float *)malloc(size);
@@ -508,12 +528,11 @@ int main(){
 	poissonFinal_h=(float *)malloc(size_ne);
 	Ex_h = (float *)malloc(size_ne);
 	Ey_h = (float *)malloc(size_ne);
-	posicionx_h = (float *)malloc(size);
-	velocidadx_h =  (float *)malloc(size);
 	salidaxy_h = (float *)malloc(size);
-	posiciony_h = (float *)malloc(size);
-	velocidady_h =  (float *)malloc(size);
-
+	rx_dot = (float *)malloc(size);
+	ry_dot = (float *)malloc(size);
+	vx_dot = (float *)malloc(size);
+	vy_dot = (float *)malloc(size);
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////
 	//reserva de memoria del dispositivo.
@@ -526,18 +545,16 @@ int main(){
 	cudaMalloc((void **)&jx_d,size);
 	cudaMalloc((void **)&jy_d,size);
 	cudaMalloc((void **)&yx_d,size);
+	cudaMalloc((void **)&yy_d,size);
 	cudaMalloc((void **)&calculoPoisson_d,size_ne2);
 	cudaMalloc((void **)&poissonFinal_d,size_ne);
 	cudaMalloc((void **)&Ex_d,size_ne);
 	cudaMalloc((void **)&Ey_d,size_ne);
-	cudaMalloc((void **)&posicionx_d,size);
-	cudaMalloc((void **)&velocidadx_d,size);
 	cudaMalloc((void **)&salidaxy_d,size);
-	cudaMalloc((void **)&posiciony_d,size);
-	cudaMalloc((void **)&velocidady_d,size);
-
-
-
+	cudaMalloc((void **)&rx_dot_d,size);
+	cudaMalloc((void **)&ry_dot_d,size);
+	cudaMalloc((void **)&vx_dot_d,size);
+	cudaMalloc((void **)&vy_dot_d,size);
 /////////////////////////////////////////////////////////////////////////////////////////////////////////
 	/*Asignación de memoria a la variable tipo cufftComplex */
 	cudaMalloc((void **)&n_d_C,sizeof(cufftComplex)*C*C);
@@ -567,15 +584,12 @@ int main(){
 	inicializacionDensidad<<<blockSize,dimBlock2>>>(ne_d,C);
 	cudaDeviceSynchronize();
 
-	calculoDensidadInicializacionCeldas<<<blockSize,dimBlock>>>(rx_d,ry_d,jx_d,jy_d,yx_d,N,C,L);
-	cudaDeviceSynchronize();
-
 	//funcion Calculo densidad.
-	Densidad(ne_d,n_d,rx_d,ry_d,jx_d,jy_d,yx_d, C,L,N);     // Calculo de la densidad y normalización de la densidad.
+	Densidad(ne_d,n_d,rx_d,ry_d,jx_d,jy_d,yx_d,yy_d, C,L,N);     // Calculo de la densidad y normalización de la densidad.
 	///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 	//calculo del potencial Electroestatico.
 	calculoPotencialElectroestatico(n_d, C, n_d_C, T_F, T_F_N,Phi_Poisson, T_I,calculoPoisson_d,calculoPoisson_h,poissonFinal_d);
-	//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 	//Calculo campo Electrico.
 	calculoCampoElectricoXY(poissonFinal_d, Ey_d,Ex_d,L,C );
 
@@ -600,7 +614,6 @@ int main(){
 	//Calculo de Campo Electrico Ex, Ey.
 	cudaMemcpy(Ex_h, Ex_d, size_ne, cudaMemcpyDeviceToHost);
 	cudaMemcpy(Ey_h, Ey_d, size_ne, cudaMemcpyDeviceToHost);
-
 	/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 	ofstream init;
@@ -661,7 +674,6 @@ int main(){
 					}
 
 					init.close();
-
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 				/*Liberar memoria*/
 	free(rx_h);
@@ -674,11 +686,11 @@ int main(){
 	free(poissonFinal_h);
 	free(Ex_h);
 	free(Ey_h);
-	free(posicionx_h);
-	free(velocidadx_h);
 	free(salidaxy_h);
-	free(posiciony_h);
-	free(velocidady_h);;
+	free(rx_dot);
+	free(ry_dot);
+	free(vx_dot);
+	free(vy_dot);
 	cudaFree(rx_d);
 	cudaFree(ry_d);
 	cudaFree(vx_d);
@@ -694,11 +706,12 @@ int main(){
 	cudaFree(poissonFinal_d);
 	cudaFree(Ex_d);
 	cudaFree(Ey_d);
-	cudaFree(posicionx_d);
-	cudaFree(velocidadx_d);
 	cudaFree(salidaxy_d);
-	cudaFree(posiciony_d);
-	cudaFree(velocidady_d);
+	cudaFree(rx_dot_d);
+	cudaFree(ry_dot_d);
+	cudaFree(vx_dot_d);
+	cudaFree(vy_dot_d);
+
 
 	return (0);
 
